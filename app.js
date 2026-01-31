@@ -366,12 +366,17 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
   async function main() {
     setStatus('Loading face tracking…');
     try {
-      const visionModule = await import('https://unpkg.com/@mediapipe/tasks-vision@0.10.7/vision_bundle.mjs');
-      const FilesetResolverClass = visionModule.FilesetResolver || visionModule.default?.FilesetResolver;
-      const FaceLandmarkerClass = visionModule.FaceLandmarker || visionModule.default?.FaceLandmarker;
+      const visionModule = window.__mediapipeVision;
+      if (!visionModule) {
+        await (window.__mediapipeReady || Promise.reject(new Error('Face tracking script not ready')));
+      }
+      const m = window.__mediapipeVision;
+      if (!m) throw new Error('Face tracking did not load.');
+      const FilesetResolverClass = m.FilesetResolver || m.default?.FilesetResolver;
+      const FaceLandmarkerClass = m.FaceLandmarker || m.default?.FaceLandmarker;
       if (!FilesetResolverClass || !FaceLandmarkerClass) {
-        const keys = Object.keys(visionModule).join(', ');
-        throw new Error('Face tracking did not load. Exports: ' + (keys || 'none'));
+        const keys = Object.keys(m).join(', ');
+        throw new Error('Missing exports. Got: ' + (keys || 'none'));
       }
       setStatus('Loading model…');
       await initFaceLandmarker(FilesetResolverClass, FaceLandmarkerClass);
@@ -393,5 +398,11 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
   watchdogImage.src = 'assets/watchdog.png';
   watchdogImage.onerror = () => { watchdogImage = null; };
 
-  main();
+  if (window.__mediapipeReady) {
+    window.__mediapipeReady.then(() => main()).catch(e => {
+      setStatus('Error: ' + (e.message || String(e)));
+    });
+  } else {
+    main();
+  }
 })();

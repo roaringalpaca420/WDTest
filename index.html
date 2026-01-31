@@ -23,7 +23,7 @@
       <video id="webcam" playsinline muted></video>
       <canvas id="output"></canvas>
       <div id="threeContainer"></div>
-      <div id="status">Loading face tracking…</div>
+      <div id="status">Loading face tracking… (first load can take 10–20 sec)</div>
     </div>
 
     <div class="controls">
@@ -45,6 +45,15 @@
     </div>
   </div>
 
+  <!-- Load MediaPipe first and expose on window so app.js can use it -->
+  <script type="module">
+    window.__mediapipeReady = new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('Load timeout – use Chrome or try again')), 20000);
+      import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.7/vision_bundle.mjs')
+        .then(m => { clearTimeout(t); window.__mediapipeVision = m; resolve(); })
+        .catch(e => { clearTimeout(t); reject(e); });
+    });
+  </script>
   <script type="module" src="js/app.js"></script>
 </body>
 </html>
