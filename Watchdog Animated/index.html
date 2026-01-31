@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Watchdog Avatar – 2D & 3D Face Tracking</title>
+  <link rel="stylesheet" href="css/style.css">
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div class="container">
+    <h1>Watchdog Avatar</h1>
+    <p class="subtitle">2D image or 3D GLB – your face drives head, eyes, and jaw.</p>
+
+    <div class="view-wrapper">
+      <video id="webcam" playsinline muted></video>
+      <canvas id="output"></canvas>
+      <div id="threeContainer"></div>
+      <div id="status">Loading face tracking…</div>
+    </div>
+
+    <div class="controls">
+      <label>
+        Mode:
+        <select id="mode">
+          <option value="2d">2D image</option>
+          <option value="3d">3D model (GLB)</option>
+        </select>
+      </label>
+      <label>
+        <input type="checkbox" id="showDebug" />
+        Show landmark debug
+      </label>
+      <label id="scaleLabel">
+        Avatar scale: <input type="range" id="scale" min="0.5" max="2" step="0.05" value="1" />
+        <span id="scaleValue">1.0</span>
+      </label>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/vision_bundle.js" crossorigin="anonymous"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
