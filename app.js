@@ -1,6 +1,6 @@
 /**
  * Watchdog Avatar – 2D and 3D face tracking
- * MediaPipe Face Landmarker → 2D composite or 3D GLB (Head, Jaw, LeftEye, RightEye)
+ * Uses face-api.js (works on GitHub Pages) → 2D composite or 3D GLB
  */
 
 (function () {
@@ -15,6 +15,7 @@
     THREE = t;
     GLTFLoader = loader.GLTFLoader;
   }
+
   const video = document.getElementById('webcam');
   const canvas = document.getElementById('output');
   const ctx = canvas.getContext('2d');
@@ -25,9 +26,11 @@
   const modeEl = document.getElementById('mode');
   const threeContainer = document.getElementById('threeContainer');
 
-  let faceLandmarker = null;
+  let faceApiReady = false;
   let watchdogImage = null;
   let lastVideoTime = -1;
+  let lastFaceResult = null;
+  let detecting = false;
 
   // 3D state
   let scene3d = null;
@@ -43,21 +46,32 @@
   let lastPose3d = null;
   const SMOOTHING = 0.25;
 
-  // Where to draw eyes and mouth on the 2D avatar (normalized 0–1)
   const AVATAR_EYES_MOUTH = {
     leftEye:  { x: 0.35, y: 0.38, width: 0.12, height: 0.1 },
     rightEye: { x: 0.65, y: 0.38, width: 0.12, height: 0.1 },
     mouth:    { x: 0.45, y: 0.62, width: 0.22, height: 0.14 }
   };
 
+  // face-api.js 68-point indices
   const LANDMARKS = {
-    leftEye:  [33, 160, 158, 133, 153, 144],
-    rightEye: [362, 385, 387, 263, 373, 380],
-    mouth:    [61, 291, 0, 17, 78, 308, 324, 318]
+    leftEye:  [36, 37, 38, 39, 40, 41],
+    rightEye: [42, 43, 44, 45, 46, 47],
+    mouth:    [48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59]
   };
+
+  const MODELS_URL = 'https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/weights/';
 
   function setStatus(msg) {
     statusEl.textContent = msg;
+  }
+
+  function normalizeLandmarks(positions, w, h) {
+    if (!positions || positions.length < 68) return null;
+    const out = [];
+    for (let i = 0; i < 68; i++) {
+      out.push({ x: positions[i].x / w, y: positions[i].y / h });
+    }
+    return out;
   }
 
   function getRegion(landmarks, indices) {
@@ -78,14 +92,15 @@
     };
   }
 
-  async function initFaceLandmarker(FilesetResolverClass, FaceLandmarkerClass) {
-    const vision = await FilesetResolverClass.forVisionTasks(
-      'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.7/wasm'
-    );
-    faceLandmarker = await FaceLandmarkerClass.createFromModelPath(vision,
-      'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task'
-    );
-    await faceLandmarker.setOptions({ runningMode: 'VIDEO', numFaces: 1 });
+  async function loadFaceApi() {
+    setStatus('Loading face tracking…');
+    if (typeof faceapi === 'undefined') {
+      throw new Error('face-api.js not loaded. Wait for scripts, then refresh.');
+    }
+    setStatus('Loading face tracking… (models)');
+    await faceapi.nets.tinyFaceDetector.loadFromUri(MODELS_URL);
+    await faceapi.nets.faceLandmark68TinyNet.loadFromUri(MODELS_URL);
+    faceApiReady = true;
   }
 
   async function startWebcam() {
@@ -128,8 +143,8 @@
     ctx.restore();
   }
 
-  function drawComposite(ctx, video, landmarks, width, height, headScale, headX, headY, headTilt) {
-    if (!landmarks || landmarks.length < 400) return;
+  function drawComposite(ctx, videoEl, landmarks, width, height, headScale, headX, headY, headTilt) {
+    if (!landmarks || landmarks.length < 68) return;
     const scale = scaleEl ? parseFloat(scaleEl.value) : 1;
     const size = Math.min(width, height) * 0.85 * headScale * scale, half = size / 2;
     ctx.save();
@@ -141,14 +156,15 @@
       const slot = AVATAR_EYES_MOUTH[regionKey];
       const dx = headX - half + slot.x * size, dy = headY - half + slot.y * size;
       const dw = slot.width * size, dh = slot.height * size;
-      const sx = (region.centerX - region.width / 2) * video.videoWidth, sy = (region.centerY - region.height / 2) * video.videoHeight;
-      const sw = region.width * video.videoWidth, sh = region.height * video.videoHeight;
+      const vw = videoEl.videoWidth, vh = videoEl.videoHeight;
+      const sx = (region.centerX - region.width / 2) * vw, sy = (region.centerY - region.height / 2) * vh;
+      const sw = region.width * vw, sh = region.height * vh;
       ctx.save();
       ctx.beginPath();
       ctx.ellipse(dx + dw / 2, dy + dh / 2, dw / 2, dh / 2, 0, 0, Math.PI * 2);
       ctx.closePath();
       ctx.clip();
-      ctx.drawImage(video, sx, sy, sw, sh, dx, dy, dw, dh);
+      ctx.drawImage(videoEl, sx, sy, sw, sh, dx, dy, dw, dh);
       ctx.restore();
     };
     drawRegion('leftEye', LANDMARKS.leftEye);
@@ -158,44 +174,26 @@
   }
 
   function estimateHeadPose(landmarks) {
-    const nose = landmarks[4] || landmarks[1];
-    const left = landmarks[33], right = landmarks[263];
+    const nose = landmarks[30];
+    const left = landmarks[39], right = landmarks[42];
     if (!nose || !left || !right) return { x: 0.5, y: 0.5, scale: 1, tilt: 0 };
     const eyeDist = Math.hypot(right.x - left.x, right.y - left.y) || 0.2;
-    return { x: nose.x, y: nose.y, scale: 0.3 + 0.4 / eyeDist, tilt: 0 };
+    const roll = Math.atan2(right.y - left.y, right.x - left.x);
+    return { x: nose.x, y: nose.y, scale: 0.3 + 0.4 / eyeDist, tilt: (roll * 180) / Math.PI };
   }
 
-  /** From 478 landmarks: head yaw/pitch/roll (radians), jaw open 0–1, eye yaw/pitch (radians) */
   function estimate3DPose(landmarks) {
-    const nose = landmarks[4] ?? landmarks[1];
-    const leftEye = landmarks[33];
-    const rightEye = landmarks[263];
-    const forehead = landmarks[10] ?? landmarks[151];
-    const chin = landmarks[152] ?? landmarks[0];
-    const leftMouth = landmarks[61];
-    const rightMouth = landmarks[291];
-    const upperLip = landmarks[13];
-    const lowerLip = landmarks[14];
-
+    const nose = landmarks[30];
+    const leftEye = landmarks[36], rightEye = landmarks[42];
+    const upperLip = landmarks[51], lowerLip = landmarks[57];
     if (!nose) return null;
-
     const yaw = (nose.x - 0.5) * 1.2;
     const pitch = (0.5 - nose.y) * 1.0;
     let roll = 0;
-    if (leftEye && rightEye) {
-      roll = Math.atan2(rightEye.y - leftEye.y, rightEye.x - leftEye.x);
-    }
-
+    if (leftEye && rightEye) roll = Math.atan2(rightEye.y - leftEye.y, rightEye.x - leftEye.x);
     let jawOpen = 0;
-    if (upperLip && lowerLip) {
-      const open = Math.abs(lowerLip.y - upperLip.y);
-      jawOpen = Math.min(1, open * 8);
-    }
-
-    const eyeYaw = (nose.x - 0.5) * 0.8;
-    const eyePitch = (0.5 - nose.y) * 0.6;
-
-    return { headYaw: yaw, headPitch: pitch, headRoll: roll, jawOpen, eyeYaw, eyePitch };
+    if (upperLip && lowerLip) jawOpen = Math.min(1, Math.abs(lowerLip.y - upperLip.y) * 8);
+    return { headYaw: yaw, headPitch: pitch, headRoll: roll, jawOpen, eyeYaw: yaw * 0.8, eyePitch: pitch * 0.6 };
   }
 
   function drawDebug(ctx, landmarks, width, height) {
@@ -225,12 +223,10 @@
     camera3d.position.set(0, 0, 2.2);
     camera3d.lookAt(0, 0, 0);
     scene3d.add(camera3d);
-
     const light = new THREE.DirectionalLight(0xffffff, 1);
     light.position.set(0.5, 0.5, 1);
     scene3d.add(light);
     scene3d.add(new THREE.AmbientLight(0xffffff, 0.6));
-
     renderer3d = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     renderer3d.setSize(w, h);
     renderer3d.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -250,7 +246,6 @@
         jawNode = root.getObjectByName('Jaw');
         leftEyeNode = root.getObjectByName('LeftEye');
         rightEyeNode = root.getObjectByName('RightEye');
-
         if (!headNode) headNode = root;
         root.position.set(0, 0, 0);
         root.rotation.set(0, 0, 0);
@@ -276,16 +271,13 @@
     smooth.jawOpen = lerp(smooth.jawOpen, p.jawOpen, SMOOTHING);
     smooth.eyeYaw = lerp(smooth.eyeYaw, p.eyeYaw, SMOOTHING);
     smooth.eyePitch = lerp(smooth.eyePitch, p.eyePitch, SMOOTHING);
-
     if (headNode) {
       headNode.rotation.order = 'YXZ';
       headNode.rotation.y = smooth.headYaw;
       headNode.rotation.x = smooth.headPitch;
       headNode.rotation.z = smooth.headRoll;
     }
-    if (jawNode) {
-      jawNode.rotation.x = smooth.jawOpen * 0.6;
-    }
+    if (jawNode) jawNode.rotation.x = smooth.jawOpen * 0.6;
     if (leftEyeNode) {
       leftEyeNode.rotation.order = 'YXZ';
       leftEyeNode.rotation.y = smooth.eyeYaw;
@@ -298,48 +290,53 @@
     }
   }
 
+  function runDetection() {
+    if (!faceApiReady || !video.videoWidth || detecting) return;
+    detecting = true;
+    faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 224 }))
+      .withFaceLandmarks()
+      .then((result) => {
+        lastFaceResult = result;
+        detecting = false;
+      })
+      .catch(() => { detecting = false; });
+  }
+
   function tick() {
-    if (!faceLandmarker || !video.videoWidth) {
+    if (!faceApiReady || !video.videoWidth) {
       requestAnimationFrame(tick);
       return;
     }
+    runDetection();
 
     const width = canvas.width;
     const height = canvas.height;
     const is3D = modeEl && modeEl.value === '3d';
+    const vw = video.videoWidth;
+    const vh = video.videoHeight;
 
-    if (video.currentTime !== lastVideoTime) {
-      lastVideoTime = video.currentTime;
-      try {
-        const result = faceLandmarker.detectForVideo(video, performance.now());
-        const faces = result.faceLandmarks || [];
-        if (faces.length > 0) {
-          const landmarks = faces[0];
-          const head = estimateHeadPose(landmarks);
-          const headX = head.x * width;
-          const headY = head.y * height;
+    if (lastFaceResult && lastFaceResult.landmarks) {
+      const landmarks = normalizeLandmarks(lastFaceResult.landmarks.positions, vw, vh);
+      if (landmarks) {
+        setStatus('Face tracked');
+        const head = estimateHeadPose(landmarks);
+        const headX = head.x * width;
+        const headY = head.y * height;
 
-          if (is3D) {
-            setStatus('Face tracked');
-            if (!scene3d) init3D(width, height);
-            if (!glbLoaded && !glbLoading) loadGLB();
-            if (glbLoaded) {
-              lastPose3d = estimate3DPose(landmarks);
-            }
-          } else {
-            setStatus('Face tracked');
-            ctx.clearRect(0, 0, width, height);
-            drawAvatarBase(ctx, width, height, head.scale, headX, headY, head.tilt);
-            drawComposite(ctx, video, landmarks, width, height, head.scale, headX, headY, head.tilt);
-            if (showDebugEl && showDebugEl.checked) drawDebug(ctx, landmarks, width, height);
-          }
+        if (is3D) {
+          if (!scene3d) init3D(width, height);
+          if (!glbLoaded && !glbLoading) loadGLB();
+          if (glbLoaded) lastPose3d = estimate3DPose(landmarks);
         } else {
-          setStatus('No face – look at the camera');
-          if (!is3D) ctx.clearRect(0, 0, width, height);
+          ctx.clearRect(0, 0, width, height);
+          drawAvatarBase(ctx, width, height, head.scale, headX, headY, head.tilt);
+          drawComposite(ctx, video, landmarks, width, height, head.scale, headX, headY, head.tilt);
+          if (showDebugEl && showDebugEl.checked) drawDebug(ctx, landmarks, width, height);
         }
-      } catch (e) {
-        setStatus('Error: ' + (e.message || 'detection failed'));
       }
+    } else {
+      setStatus('No face – look at the camera');
+      if (!is3D) ctx.clearRect(0, 0, width, height);
     }
 
     if (is3D && glbLoaded && renderer3d && scene3d && camera3d) {
@@ -373,39 +370,9 @@
   scaleEl.addEventListener('input', () => { scaleValueEl.textContent = scaleEl.value; });
   modeEl.addEventListener('change', setMode);
 
-  const MEDIAPIPE_CDNS = [
-    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.7/vision_bundle.mjs',
-    'https://unpkg.com/@mediapipe/tasks-vision@0.10.7/vision_bundle.mjs'
-  ];
-  const LOAD_TIMEOUT_MS = 12000;
-
-  async function loadMediaPipe() {
-    setStatus('Loading face tracking… (up to 12 sec)');
-    const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('Timeout. Use Chrome and check Wi‑Fi.')), LOAD_TIMEOUT_MS)
-    );
-    let lastErr;
-    for (const url of MEDIAPIPE_CDNS) {
-      try {
-        const m = await Promise.race([import(url), timeoutPromise]);
-        const FilesetResolverClass = m.FilesetResolver || m.default?.FilesetResolver;
-        const FaceLandmarkerClass = m.FaceLandmarker || m.default?.FaceLandmarker;
-        if (FilesetResolverClass && FaceLandmarkerClass) {
-          return { FilesetResolverClass, FaceLandmarkerClass };
-        }
-      } catch (e) {
-        lastErr = e;
-        if (url !== MEDIAPIPE_CDNS[MEDIAPIPE_CDNS.length - 1]) setStatus('Retrying…');
-      }
-    }
-    throw lastErr || new Error('Face tracking failed to load.');
-  }
-
   async function main() {
     try {
-      const { FilesetResolverClass, FaceLandmarkerClass } = await loadMediaPipe();
-      setStatus('Loading model…');
-      await initFaceLandmarker(FilesetResolverClass, FaceLandmarkerClass);
+      await loadFaceApi();
       setStatus('Starting webcam…');
       await startWebcam();
       video.addEventListener('loadedmetadata', resize);

@@ -5,7 +5,7 @@ React on camera with a **watchdog avatar** in two modes:
 - **2D image:** Your real eyes and mouth are composited onto a 2D image; head movement drives position/scale.
 - **3D model (GLB):** A rigged GLB (Head, Jaw, LeftEye, RightEye) is driven by face tracking: head pose → Head, mouth open → Jaw, gaze → LeftEye/RightEye.
 
-Uses **MediaPipe Face Landmarker** (Apache 2.0) and **Three.js** in the browser.
+Uses **face-api.js** (TensorFlow.js + 68-point face landmarks) and **Three.js** in the browser. Loads via script tags so it works on GitHub Pages.
 
 ## Quick start
 
@@ -73,8 +73,8 @@ Deploying to **GitHub Pages** gives you a public HTTPS URL so you can use the ap
 
 ## Tech
 
-- **MediaPipe Face Landmarker** (Web, Apache 2.0) for face/eyes/mouth/head.
-- Vanilla JS, no build step. CDN: `@mediapipe/tasks-vision`.
+- **face-api.js** (TensorFlow.js) for face detection and 68-point landmarks; **Three.js** for 3D GLB.
+- Vanilla JS, no build step. Scripts: `tf.min.js`, `face-api.min.js` from CDN.
 
 ## License
 
