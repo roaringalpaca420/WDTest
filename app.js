@@ -3,10 +3,18 @@
  * MediaPipe Face Landmarker → 2D composite or 3D GLB (Head, Jaw, LeftEye, RightEye)
  */
 
-import * as THREE from 'three';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-
 (function () {
+  let THREE = null;
+  let GLTFLoader = null;
+  async function ensureThree() {
+    if (THREE) return;
+    const [t, loader] = await Promise.all([
+      import('three'),
+      import('three/addons/loaders/GLTFLoader.js')
+    ]);
+    THREE = t;
+    GLTFLoader = loader.GLTFLoader;
+  }
   const video = document.getElementById('webcam');
   const canvas = document.getElementById('output');
   const ctx = canvas.getContext('2d');
@@ -208,8 +216,9 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
     return a + (b - a) * t;
   }
 
-  function init3D(w, h) {
+  async function init3D(w, h) {
     if (scene3d) return;
+    await ensureThree();
     scene3d = new THREE.Scene();
     scene3d.background = new THREE.Color(0x1a1a1a);
     camera3d = new THREE.PerspectiveCamera(40, w / h, 0.1, 100);
@@ -228,10 +237,11 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
     threeContainer.appendChild(renderer3d.domElement);
   }
 
-  function loadGLB() {
+  async function loadGLB() {
     if (glbLoaded || glbLoading) return Promise.resolve();
     glbLoading = true;
     setStatus('Loading 3D model…');
+    await ensureThree();
     const loader = new GLTFLoader();
     return loader.loadAsync('Watchdog Avatar/watchdog_head.glb')
       .then((gltf) => {
@@ -363,21 +373,37 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
   scaleEl.addEventListener('input', () => { scaleValueEl.textContent = scaleEl.value; });
   modeEl.addEventListener('change', setMode);
 
+  const MEDIAPIPE_CDNS = [
+    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.7/vision_bundle.mjs',
+    'https://unpkg.com/@mediapipe/tasks-vision@0.10.7/vision_bundle.mjs'
+  ];
+  const LOAD_TIMEOUT_MS = 12000;
+
+  async function loadMediaPipe() {
+    setStatus('Loading face tracking… (up to 12 sec)');
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Timeout. Use Chrome and check Wi‑Fi.')), LOAD_TIMEOUT_MS)
+    );
+    let lastErr;
+    for (const url of MEDIAPIPE_CDNS) {
+      try {
+        const m = await Promise.race([import(url), timeoutPromise]);
+        const FilesetResolverClass = m.FilesetResolver || m.default?.FilesetResolver;
+        const FaceLandmarkerClass = m.FaceLandmarker || m.default?.FaceLandmarker;
+        if (FilesetResolverClass && FaceLandmarkerClass) {
+          return { FilesetResolverClass, FaceLandmarkerClass };
+        }
+      } catch (e) {
+        lastErr = e;
+        if (url !== MEDIAPIPE_CDNS[MEDIAPIPE_CDNS.length - 1]) setStatus('Retrying…');
+      }
+    }
+    throw lastErr || new Error('Face tracking failed to load.');
+  }
+
   async function main() {
-    setStatus('Loading face tracking…');
     try {
-      const visionModule = window.__mediapipeVision;
-      if (!visionModule) {
-        await (window.__mediapipeReady || Promise.reject(new Error('Face tracking script not ready')));
-      }
-      const m = window.__mediapipeVision;
-      if (!m) throw new Error('Face tracking did not load.');
-      const FilesetResolverClass = m.FilesetResolver || m.default?.FilesetResolver;
-      const FaceLandmarkerClass = m.FaceLandmarker || m.default?.FaceLandmarker;
-      if (!FilesetResolverClass || !FaceLandmarkerClass) {
-        const keys = Object.keys(m).join(', ');
-        throw new Error('Missing exports. Got: ' + (keys || 'none'));
-      }
+      const { FilesetResolverClass, FaceLandmarkerClass } = await loadMediaPipe();
       setStatus('Loading model…');
       await initFaceLandmarker(FilesetResolverClass, FaceLandmarkerClass);
       setStatus('Starting webcam…');
@@ -398,11 +424,5 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
   watchdogImage.src = 'assets/watchdog.png';
   watchdogImage.onerror = () => { watchdogImage = null; };
 
-  if (window.__mediapipeReady) {
-    window.__mediapipeReady.then(() => main()).catch(e => {
-      setStatus('Error: ' + (e.message || String(e)));
-    });
-  } else {
-    main();
-  }
+  main();
 })();
